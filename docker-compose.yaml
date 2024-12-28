@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  scholar_db:
+    image: mysql:8.0
+    container_name: scholar_db
+    restart: always
+    environment:
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-scholar_db}
+      - MYSQL_USER=${MYSQL_USER:-scholar_user}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-scholar_pass}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-rootpass}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - scholar_mysql_data:/var/lib/mysql
+      - ./init:/docker-entrypoint-initdb.d
+    networks:
+      - scholar_network
+
+volumes:
+  scholar_mysql_data:
+    name: scholar_mysql_data
+
+networks:
+  scholar_network:
+    name: scholar_network
