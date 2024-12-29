@@ -1,240 +1,172 @@
 #!/usr/bin/env python3
 
-'''
+"""
 This script demonstrates how to use the Semantic Scholar API to search for papers 
 and retrieve their details.
-'''
+"""
 
+import csv
 import os
 import time
+
 import pandas as pd
+from article import Article
+from author import Author
+from data_fetcher import DataFetcher
+from database import DatabaseManager
 from jinja2 import Environment, FileSystemLoader
+from utils import (add_paper_details, add_recommendations,
+                   add_recommendations_to_positive_articles,
+                   get_author_details, get_paper_details, update_h_index)
 
-DIC = {}
 
-def create_template(template,
-                    topic_name,
-                    paper_ids,
-                    df_citations) -> str:
-    """
-    Return the markdown content for a given template
+def print_divider():
+    """Print a divider line for better readability"""
+    print("\n" + "=" * 80 + "\n")
 
-    Args:
-        template_file (str): template file
-        topic (str): topic of the category
-        dic (dict): dictionary with the most cited and most recent articles
-        df (pd.DataFrame): dataframe with the metrics over time
-        dic_all_citations (dict): dictionary with the number of citations for all categories
-    Returns:
-        str: markdown content
 
-    Example:
-    category_name = "category1"
-    DF = pd.DataFrame({
-        'date': ['2020-01-01', '2019-01-01'],
-        'num_citations': [10, 20],
-        'num_articles': [10, 20]
-    })
+def extract_paper_id_from_url(url: str) -> str:
+    """Extract paper ID from Semantic Scholar URL"""
+    try:
+        last_part = url.split("/")[-1]
+        paper_id = last_part.split("?")[0]
+        return paper_id
+    except Exception as e:
+        print(f"Error extracting paper ID from URL {url}: {e}")
+        return None
 
-    markdown_text = create_template("category.txt", category_name, DF)
-    """
-    # Set the template environment
-    environment = Environment(loader=FileSystemLoader(template[0]))
-    # Get the template
-    template = environment.get_template(template[1])
-    # Render the template
-    if df_citations.empty:
-        content = template.render(
-            # current time
-            current_time=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-            positive_paper_ids=paper_ids,
-            category_name=topic_name,
-            title=topic_name,
-        )
-    else:
-        content = template.render(
-            # current time
-            current_time=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-            positive_paper_ids=paper_ids['positive'],
-            recommended_paper_ids=paper_ids['recommended'],
-            category_name=topic_name,
-            title=topic_name,
-            x_year = df_citations['Year'].tolist(),
-            y_num_citations = df_citations['num_citations'].tolist(),
-        )
-    # return markdownify.markdownify(content)
-    return content
 
-if os.path.exists('../../docs/recommendations') is False:
-    os.mkdir('../../docs/recommendations')
+def process_csv_file(csv_path: str, db: DatabaseManager):
+    """Process the CSV file and store data in the database"""
+    # Count total rows for progress tracking
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
+        total_rows = sum(1 for _ in csv.DictReader(f))
 
-if __name__ == '__main__':
-    import utils
-    from topic import Topic
-    from article import Article
-    from author import Author
+    print(f"Found {total_rows} papers to process")
+    print_divider()
 
-    QUERY_FILE = '../data/query.tsv'
-    # Work with all the topics
-    with open(QUERY_FILE, 'r', encoding='utf-8-sig') as f:
-        for line in f:
-            if line.split('\t')[0] == 'Topic':
-                continue
-            topic = line.split('\t')[0].lstrip().rstrip()
-            if line.split('\t')[1] is None:
-                continue
-            USE_ARTICLE = bool(line.split('\t')[1].lstrip().rstrip() == '1')
-            paper_id = line.split('\t')[2].split('/')[-1].split('?')[0]
-            # Check if the topic is already in the dictionary
-            topic_obj = Topic(topic) if topic not in DIC else DIC[topic]
-            DIC[topic] = topic_obj
-            # Add the article to the list of positive articles
-            topic_obj.paper_ids['positive'][paper_id] = Article(paper_id,
-                                                                use_for_recommendation=USE_ARTICLE)
-    # Fetch the recommendations for each topic
-    # make the markdown files
-    for topic, topic_obj in DIC.items():
-        # if topic not in ['Symbolic regression', 'Koopman operator theory', 'PINNs']:
-        # if topic not in ['Neural ODEs', 'Latent space simulators (VAMP)']:
-        #     continue
-        # Add the negative articles
-        utils.add_negative_articles(topic_obj, DIC)
-        # Update the details of the papers
-        all_paper_data = utils.update_paper_details(topic_obj)
-        for paper_data in all_paper_data:
-            paper_id = paper_data['paperId']
-            if paper_id in topic_obj.paper_ids['negative']:
-                paper_obj = topic_obj.paper_ids['negative'][paper_id]
-            else:
-                paper_obj = topic_obj.paper_ids['positive'][paper_id]
-            utils.add_paper_details(
-                            paper_obj,
-                            paper_data)
-            # Some articles are used as negative so they already have authors
-            # assigned to them. If not, assign the authors to the article
-            if len(paper_obj.authors) > 0:
-                continue
-            for author in paper_data['authors']:
-                # if the author id is None, set it to the name
-                if author['authorId'] is None:
-                    author['authorId'] = author['name']
-                    print (f'Author ID is None for {author["name"]}. Setting it to the name.')
-                # Add the author to the article
-                paper_obj.authors.append(
-                                        Author(author['authorId'],
-                                        author_name=author['name']))
-        ###########################################################
-        ## GET THE RECOMMENDATIONS FOR A SINGLE POSITIVE ARTICLE ##
-        for article_id, article_obj in topic_obj.paper_ids['positive'].items():
-            # utils.add_recommendations_to_positive_articles(article_obj, 2)
-            search_response = utils.add_recommendations_to_positive_articles(article_id,
-                                                                             limit=10)
-            for rec_paper_data in search_response:
-                # skip the ones with publication date is null
-                if rec_paper_data['publicationDate'] is None:
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row_num, row in enumerate(reader, 1):
+            try:
+                print(f"Processing paper {row_num}/{total_rows}")
+
+                # Process topic
+                topic = row["Topic"].strip()
+                print(f"Topic: {topic}")
+                topic_id = db.insert_topic(topic)
+                print(f"✓ Topic saved to database (ID: {topic_id})")
+
+                # Extract paper ID from URL
+                paper_id = extract_paper_id_from_url(row["URL"].strip())
+                if not paper_id:
+                    print(f"✗ Invalid URL: {row['URL']}")
+                    print_divider()
                     continue
-                rec_paper_obj = Article(rec_paper_data['paperId'])
-                # rec_paper_obj.add_paper_details(rec_paper_data)
-                ##
-                for author in rec_paper_data['authors']:
-                    # if the author id is None, set it to the name
-                    if author['authorId'] is None:
-                        author['authorId'] = author['name']
-                        print (f'Author ID is None for {author["name"]}. Setting it to the name.')
-                    # Add the author to the article
-                    rec_paper_obj.authors.append(
-                                            Author(author['authorId'],
-                                            author_name=author['name']))
-                utils.add_paper_details(rec_paper_obj, rec_paper_data)
-                if article_obj.recommended_articles is None:
-                    article_obj.recommended_articles = []
-                article_obj.recommended_articles.append(rec_paper_obj)
-            ##########
-            if article_obj.recommended_articles is None:
-                continue
-            # Get the author ids of the recommended articles
-            rec_articles_authors_ids = article_obj.get_recommened_articles_authors_ids()
-            # Get the details of the authors of the recommended articles
-            rec_articles_author_details = utils.get_author_details(rec_articles_authors_ids)
-            for article_recommendations_obj in article_obj.recommended_articles:
-                utils.update_h_index(article_recommendations_obj,
-                                     rec_articles_author_details)
-            # Create the markdown text
-            markdown_text = create_template(
-                                            ("../../templates",
-                                            "positive_paper_recommendation.txt"),
-                                            article_obj.info.title,
-                                            article_obj.recommended_articles,
-                                            pd.DataFrame()
-                                            )
-            # Add the hide navigation
-            markdown_text = "---\nhide:\n - navigation\n---\n" + markdown_text
-            # Write the markdown text to a file
-            with open(f'../../docs/recommendations/{article_id}.md', 'w', encoding='utf-8') as file:
-                file.write(markdown_text)
-        ##################################################################
-        ## GET THE RECOMMENDATIONS FOR ALL POSITIVE ARTICLES IN A TOPIC ##
-        # topic_obj.update_recommended_articles() # Update the recommended articles
-        print (f'Fetching recommendations for {topic_obj.topic}...')
-        if len(topic_obj.paper_ids['positive']) == 0:
-            print (f'No positive articles for {topic_obj.topic}. Skipping...')
-        else:
-            search_response_json = utils.add_recommendations(topic_obj, limit=50)
-            for paper_data in search_response_json['recommendedPapers']:
-                paper_id = paper_data['paperId']
-                # skip the ones with publication date is null
-                if paper_data['publicationDate'] is None:
-                    continue
-                if 'recommended' not in topic_obj.paper_ids:
-                    topic_obj.paper_ids['recommended'] = {}
-                paper_obj = Article(paper_data['paperId'])
-                utils.add_paper_details(paper_obj, paper_data)
-                for author in paper_data['authors']:
-                    # if the author id is None, set it to the name
-                    if author['authorId'] is None:
-                        author['authorId'] = author['name']
-                        print (f'Author ID is None for {author["name"]}. Setting it to the name.')
-                    # Add the author to the article
-                    paper_obj.authors.append(
-                                            Author(author['authorId'],
-                                            author_name=author['name']))
-                topic_obj.paper_ids['recommended'][paper_id] = paper_obj
-        ##################################################################
-        # Get the metrics over time
-        df = utils.metrics_over_time_js(topic_obj.paper_ids['recommended'])
-        authors_ids = topic_obj.get_all_authors_ids() # Get all the authors of the articles
-        author_details = utils.get_author_details(authors_ids) # Get the details of the authors
-        for article_type in topic_obj.paper_ids:
-            for article_id, article_obj in topic_obj.paper_ids[article_type].items():
-                utils.update_h_index(article_obj, author_details)
-        print (f'Fetched the details of the authors (n={len(author_details)}) for {topic}.')
-        # Add the recommended articles to Zotero
-        utils.add_recommended_articles_to_zotero(topic, topic_obj.paper_ids)
-        # Create the markdown text
-        markdown_text = create_template(
-                                        ("../../templates", "topic.txt"),
-                                        topic,
-                                        topic_obj.paper_ids,
-                                        df
-                                        )
-        # Add the hide navigation
-        markdown_text = "---\nhide:\n - navigation\n---\n" + markdown_text
-        # Write the markdown text to a file
-        with open(f'../../docs/{topic}.md', 'w', encoding='utf-8') as file:
-            file.write(markdown_text)
-        #################################################################
-        # break
 
-    # Read YAML file
-    data = utils.read_yaml('../../base.yml')
+                print(f"Paper ID: {paper_id}")
 
-    # Add more stuff to the YAML data
-    # data['nav'] = []
-    for topic, topic_obj in DIC.items():
-        data['nav'].append({topic: topic + '.md'})
+                # Convert use_for_recommendation to boolean
+                use_for_rec = str(row["Use"]).strip().lower()
+                use_for_rec = use_for_rec in ["1", "true", "yes", "y"]
+                print(f"Use for recommendations: {use_for_rec}")
 
-    # reverser the order so that Overview appears first
-    # data['nav'] = data['nav'][::-1]
-    # Write modified YAML data back to file
-    utils.write_yaml(data, '../../mkdocs.yml')
-    print (f'Completed at {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}')
+                # Fetch paper details
+                print("Fetching paper details from Semantic Scholar...")
+                paper_data = get_paper_details([paper_id])[0]
+
+                # Create Article object
+                article = Article(paper_id, use_for_recommendation=use_for_rec)
+                add_paper_details(article, paper_data)
+                print(f"✓ Retrieved paper details: {article.info.title}")
+
+                # Process authors
+                print(f"Processing {len(paper_data['authors'])} authors...")
+                for author_data in paper_data["authors"]:
+                    author_id = author_data.get("authorId") or author_data["name"]
+                    author = Author(
+                        author_id=author_id, author_name=author_data["name"]
+                    )
+                    article.authors.append(author)
+                print("✓ Authors processed")
+
+                # Store in database
+                print("Saving paper to database...")
+                db.insert_paper(article)
+                db.link_topic_paper(topic_id, paper_id, "positive", use_for_rec)
+                print("✓ Paper and authors saved to database")
+
+                # Process recommendations if needed
+                if use_for_rec:
+                    print("\nFetching paper recommendations...")
+                    recommendations = add_recommendations_to_positive_articles(
+                        paper_id, limit=10
+                    )
+                    print(f"Found {len(recommendations)} recommendations")
+
+                    for rec_num, rec_paper_data in enumerate(recommendations, 1):
+                        if rec_paper_data["publicationDate"] is None:
+                            print(
+                                f"Skipping recommendation {rec_num} - no publication date"
+                            )
+                            continue
+
+                        print(
+                            f"\nProcessing recommendation {rec_num}/{len(recommendations)}"
+                        )
+                        rec_paper = Article(rec_paper_data["paperId"])
+                        add_paper_details(rec_paper, rec_paper_data)
+                        print(f"✓ Recommendation title: {rec_paper.info.title}")
+
+                        # Add recommendation authors
+                        print(
+                            f"Processing {len(rec_paper_data['authors'])} recommendation authors..."
+                        )
+                        for author_data in rec_paper_data["authors"]:
+                            author_id = (
+                                author_data.get("authorId") or author_data["name"]
+                            )
+                            author = Author(
+                                author_id=author_id, author_name=author_data["name"]
+                            )
+                            rec_paper.authors.append(author)
+
+                        # Store recommendation
+                        print("Saving recommendation to database...")
+                        db.insert_paper(rec_paper)
+                        db.insert_recommendation(paper_id, rec_paper.article_id)
+                        print("✓ Recommendation saved")
+
+                print("\n✓ Successfully processed paper!")
+
+            except Exception as e:
+                print(f"\n✗ Error processing row {row_num}:")
+                print(f"Error details: {e}")
+
+            print_divider()
+
+
+def main():
+    try:
+        # Initialize database connection
+        print("Initializing database connection...")
+        db = DatabaseManager()
+
+        # Initialize data fetcher
+        fetcher = DataFetcher(db)
+
+        # Process CSV file
+        csv_path = "../data/query.csv"
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"CSV file not found at {csv_path}")
+
+        print(f"\nStarting to process CSV file: {csv_path}")
+        fetcher.process_papers(csv_path)
+        print("Completed processing papers")
+
+    except Exception as e:
+        print(f"Error in main execution: {e}")
+
+
+if __name__ == "__main__":
+    main()
