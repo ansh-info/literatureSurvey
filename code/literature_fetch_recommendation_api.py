@@ -12,6 +12,7 @@ import time
 import pandas as pd
 from article import Article
 from author import Author
+from data_fetcher import DataFetcher
 from database import DatabaseManager
 from jinja2 import Environment, FileSystemLoader
 from utils import (add_paper_details, add_recommendations,
@@ -146,27 +147,25 @@ def process_csv_file(csv_path: str, db: DatabaseManager):
 
 
 def main():
-    start_time = time.time()
     try:
+        # Initialize database connection
         print("Initializing database connection...")
         db = DatabaseManager()
-        print("✓ Database connected")
 
+        # Initialize data fetcher
+        fetcher = DataFetcher(db)
+
+        # Process CSV file
         csv_path = "../data/query.csv"
         if not os.path.exists(csv_path):
             raise FileNotFoundError(f"CSV file not found at {csv_path}")
 
         print(f"\nStarting to process CSV file: {csv_path}")
-        print_divider()
-
-        process_csv_file(csv_path, db)
-
-        end_time = time.time()
-        duration = end_time - start_time
-        print(f"\nProcessing completed in {duration:.2f} seconds")
+        fetcher.process_papers(csv_path)
+        print("Completed processing papers")
 
     except Exception as e:
-        print(f"\n✗ Error in main execution: {e}")
+        print(f"Error in main execution: {e}")
 
 
 if __name__ == "__main__":
