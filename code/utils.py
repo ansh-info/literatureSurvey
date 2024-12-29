@@ -1,125 +1,183 @@
 #!/usr/bin/env python3
 
-'''
+"""
 script to define utility functions
-'''
+"""
 
 import os
-import sys
 import re
+import sys
+import time
+
 import matplotlib.pyplot as plt
 import pandas as pd
-import yaml
 import requests
+import yaml
 from pyzotero import zotero
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-FIELDS = 'paperId,url,authors,journal,title,'
-FIELDS += 'publicationTypes,publicationDate,citationCount,'
-FIELDS += 'publicationVenue,externalIds,abstract'
+FIELDS = "paperId,url,authors,journal,title,"
+FIELDS += "publicationTypes,publicationDate,citationCount,"
+FIELDS += "publicationVenue,externalIds,abstract"
 
-LIBRARY_TYPE = 'group'
-LIBRARY_ID = os.environ.get('LIBRARY_ID')
-ZOTERO_API_KEY = os.environ.get('ZOTERO_API_KEY')
-TEST_COLLECTION_KEY = os.environ.get('TEST_COLLECTION_KEY')
+LIBRARY_TYPE = "group"
+LIBRARY_ID = os.environ.get("LIBRARY_ID")
+ZOTERO_API_KEY = os.environ.get("ZOTERO_API_KEY")
+TEST_COLLECTION_KEY = os.environ.get("TEST_COLLECTION_KEY")
+
+
+def create_session():
+    """Create a requests session with retry strategy"""
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    return session
+
+
+def handle_api_request(session, url, params=None, json=None, method="GET"):
+    """Handle API requests with rate limiting and retries"""
+    try:
+        if method == "GET":
+            response = session.get(url, params=params, timeout=30)
+        else:  # POST
+            response = session.post(url, params=params, json=json, timeout=30)
+
+        if response.status_code == 429:
+            wait_time = int(response.headers.get("Retry-After", 60))
+            print(f"Rate limited. Waiting {wait_time} seconds...")
+            time.sleep(wait_time)
+            return handle_api_request(session, url, params, json, method)
+
+        response.raise_for_status()
+        time.sleep(1)  # Basic rate limiting
+        return response.json()
+
+    except requests.exceptions.Timeout:
+        print("Request timed out. Retrying...")
+        time.sleep(2)
+        return handle_api_request(session, url, params, json, method)
+
+    except Exception as e:
+        print(f"API request failed: {e}")
+        return None
+
 
 def add_recommended_articles_to_zotero(topic_name, paper_ids):
     """
     Add the recommended articles to zotero
     """
     if LIBRARY_ID is None or ZOTERO_API_KEY is None or TEST_COLLECTION_KEY is None:
-        print ('Zotero credentials not found.')
+        print("Zotero credentials not found.")
     else:
-        print ('Adding recommended articles to Zotero.')
+        print("Adding recommended articles to Zotero.")
         # Create a zotero object
         zot = zotero.Zotero(LIBRARY_ID, LIBRARY_TYPE, ZOTERO_API_KEY)
         new_items = []
-        for _, paper_obj in paper_ids['recommended'].items():
+        for _, paper_obj in paper_ids["recommended"].items():
             # create a template for the paper
-            template = zot.item_template('journalArticle')
-            template['title'] = paper_obj.info.title
-            template['creators'] = []
+            template = zot.item_template("journalArticle")
+            template["title"] = paper_obj.info.title
+            template["creators"] = []
             for author in paper_obj.authors:
-                template['creators'].append({'creatorType': 'author',
-                                            'name': author.author_name})
-            template['publicationTitle'] = paper_obj.info.journal
-            template['date'] = paper_obj.info.publication_date
-            template['abstractNote'] = paper_obj.info.abstract
-            template['url'] = paper_obj.info.url
+                template["creators"].append(
+                    {"creatorType": "author", "name": author.author_name}
+                )
+            template["publicationTitle"] = paper_obj.info.journal
+            template["date"] = paper_obj.info.publication_date
+            template["abstractNote"] = paper_obj.info.abstract
+            template["url"] = paper_obj.info.url
             # assign topic names as tags
-            template['tags'] = [{'tag': topic_name}]
+            template["tags"] = [{"tag": topic_name}]
             # assign the paper to the collection
-            template['collections'] = [TEST_COLLECTION_KEY]
+            template["collections"] = [TEST_COLLECTION_KEY]
             new_items.append(template)
         # add all the items to zotero, only 50 items at a time
         for i in range(0, len(new_items), 50):
-            zot.check_items(new_items[i:i+50])
-            zot.create_items(new_items[i:i+50])
+            zot.check_items(new_items[i : i + 50])
+            zot.create_items(new_items[i : i + 50])
+
 
 def add_negative_articles(topic_obj, dic):
     """
     Add the negative articles to the topic object
     """
-    if 'negative' not in topic_obj.paper_ids:
-        topic_obj.paper_ids['negative'] = {}
+    if "negative" not in topic_obj.paper_ids:
+        topic_obj.paper_ids["negative"] = {}
     for topic in dic:
         # Skip the current topic
         if topic == topic_obj.topic:
             continue
         # Add the negative articles to the topic object
-        for paper_id in dic[topic].paper_ids['positive']:
+        for paper_id in dic[topic].paper_ids["positive"]:
             # Skip if the paper id is already in the negative articles
-            if paper_id in topic_obj.paper_ids['negative']:
+            if paper_id in topic_obj.paper_ids["negative"]:
                 continue
             # Skip if the paper id is already in the positive articles
             # i.e. do not add the same paper id to both positive and negative articles
-            if paper_id in topic_obj.paper_ids['positive']:
+            if paper_id in topic_obj.paper_ids["positive"]:
                 continue
             # Skip if the paper id if it is marked to be not used for recommendation
-            paper_obj = dic[topic].paper_ids['positive'][paper_id]
+            paper_obj = dic[topic].paper_ids["positive"][paper_id]
             if paper_obj.use_for_recommendation is False:
                 continue
-            topic_obj.paper_ids['negative'][paper_id]=dic[topic].paper_ids['positive'][paper_id]
-    print (f'Added {len(topic_obj.paper_ids["negative"])} negative articles for {topic_obj.topic}.')
+            topic_obj.paper_ids["negative"][paper_id] = dic[topic].paper_ids[
+                "positive"
+            ][paper_id]
+    print(
+        f'Added {len(topic_obj.paper_ids["negative"])} negative articles for {topic_obj.topic}.'
+    )
+
 
 def update_paper_details(topic_obj):
     """
     Fetch the details of all the papers
     """
-    all_paper_ids = list(topic_obj.paper_ids['positive'].keys())
-    all_paper_ids += list(topic_obj.paper_ids['negative'].keys())
+    all_paper_ids = list(topic_obj.paper_ids["positive"].keys())
+    all_paper_ids += list(topic_obj.paper_ids["negative"].keys())
     all_paper_ids = list(set(all_paper_ids))
     all_paper_data = get_paper_details(all_paper_ids)
     # Check if the paper id matches the paper data
     # If not, change the paper id to the new paper id
     for paper_id, paper_data in zip(all_paper_ids, all_paper_data):
-        if paper_id == paper_data['paperId']:
+        if paper_id == paper_data["paperId"]:
             continue
-        print (f'Paper ID {paper_id} does not match {paper_data["paperId"]}.\
-               Changing the paper ID.')
-        if paper_id in topic_obj.paper_ids['positive']:
+        print(
+            f'Paper ID {paper_id} does not match {paper_data["paperId"]}.\
+               Changing the paper ID.'
+        )
+        if paper_id in topic_obj.paper_ids["positive"]:
             # change the paper id in the positive articles
-            topic_obj.paper_ids['positive'][paper_data['paperId']] = \
-                            topic_obj.paper_ids['positive'].pop(paper_id)
-        elif paper_id in topic_obj.paper_ids['negative']:
+            topic_obj.paper_ids["positive"][paper_data["paperId"]] = (
+                topic_obj.paper_ids["positive"].pop(paper_id)
+            )
+        elif paper_id in topic_obj.paper_ids["negative"]:
             # change the paper id in the negative articles
-            topic_obj.paper_ids['negative'][paper_data['paperId']] = \
-                            topic_obj.paper_ids['negative'].pop(paper_id)
+            topic_obj.paper_ids["negative"][paper_data["paperId"]] = (
+                topic_obj.paper_ids["negative"].pop(paper_id)
+            )
     return all_paper_data
+
 
 def add_paper_details(article_obj, article_data):
     """
     Add the details of the article
     """
     article_obj.info.journal = update_journal(
-                                article_data['journal'],
-                                article_data['publicationVenue'],
-                                article_data['externalIds'])
-    article_obj.info.title = article_data['title']
-    article_obj.info.url = article_data['url']
-    article_obj.info.abstract = article_data['abstract']
-    article_obj.info.publication_date = article_data['publicationDate']
-    article_obj.info.citation_count = article_data['citationCount']
+        article_data["journal"],
+        article_data["publicationVenue"],
+        article_data["externalIds"],
+    )
+    article_obj.info.title = article_data["title"]
+    article_obj.info.url = article_data["url"]
+    article_obj.info.abstract = article_data["abstract"]
+    article_obj.info.publication_date = article_data["publicationDate"]
+    article_obj.info.citation_count = article_data["citationCount"]
     # print (article_obj.info)
+
 
 def update_h_index(article_obj, dic):
     """
@@ -134,13 +192,13 @@ def update_h_index(article_obj, dic):
         for author in article_obj.authors:
             author_id = author.author_id
             # print (author_id, row)
-            if author_id == row['authorId']:
-                author.h_index = row['hIndex']
-                author.name = row['name']
-                author.citation_count = row['citationCount']
-                if row['hIndex'] is None:
+            if author_id == row["authorId"]:
+                author.h_index = row["hIndex"]
+                author.name = row["name"]
+                author.citation_count = row["citationCount"]
+                if row["hIndex"] is None:
                     continue
-                authors_h_index_list.append(row['hIndex'])
+                authors_h_index_list.append(row["hIndex"])
     if len(authors_h_index_list) == 0:
         authors_avg_h_index = 0
     else:
@@ -149,31 +207,21 @@ def update_h_index(article_obj, dic):
     # article_obj.info.h_index = authors_avg_h_index
     article_obj.info.h_index = authors_avg_h_index
 
-def add_recommendations_to_positive_articles(article_id,
-                                             limit=500,
-                                             fields=FIELDS):
-    """
-    Add the recommendations to the positive articles
-    """
-    endpoint = 'https://api.semanticscholar.org/recommendations/v1/papers/forpaper/'
-    endpoint += f'{article_id}'
-    params={'fields': fields, 'limit': limit, 'from': 'all-cs'}
-    status_code = 0
-    while status_code not in [200, 400]:
-        # Make a POST request to the paper search batch
-        # endpoint with the URL
-        search_response = requests.get(endpoint,
-                                        params=params,
-                                        # json=json,
-                                        timeout=None)
-        status_code = search_response.status_code
-        # print (article_id, status_code)
-        if status_code == 400:
-            print ('Bad query parameters.',
-                    status_code,
-                    search_response.json())
-            sys.exit()
-    return search_response.json()['recommendedPapers']
+
+def add_recommendations_to_positive_articles(article_id, limit=500, fields=FIELDS):
+    """Get paper recommendations with improved error handling"""
+    endpoint = f"https://api.semanticscholar.org/recommendations/v1/papers/forpaper/{article_id}"
+    params = {"fields": fields, "limit": limit}
+
+    session = create_session()
+    print(f"Fetching recommendations for paper {article_id}")
+    response_data = handle_api_request(session, endpoint, params=params)
+
+    if response_data is None:
+        print("Failed to fetch recommendations")
+        return []
+    return response_data.get("recommendedPapers", [])
+
 
 def update_journal(journal, publication_venue, external_ids):
     """
@@ -181,31 +229,30 @@ def update_journal(journal, publication_venue, external_ids):
     """
     journal_name = []
     if journal is not None:
-        if 'name' in journal:
+        if "name" in journal:
             # self.journal = journal['name']
-            journal_name.append(journal['name'])
+            journal_name.append(journal["name"])
     if publication_venue is not None:
-        if 'name' in publication_venue:
+        if "name" in publication_venue:
             # self.journal = publication_venue['name']
             for name in journal_name.copy():
-                if publication_venue['name'].lower() == name.lower():
+                if publication_venue["name"].lower() == name.lower():
                     continue
-                journal_name.append(publication_venue['name'])
+                journal_name.append(publication_venue["name"])
     if not journal_name:
         for external_id in external_ids:
-            if external_id in ['CorpusId', 'DOI']:
+            if external_id in ["CorpusId", "DOI"]:
                 continue
             journal_name.append(external_id)
     if not journal_name:
         journal_name = None
     else:
         journal_name = list(set(journal_name))
-        journal_name = ', '.join(journal_name)
+        journal_name = ", ".join(journal_name)
     return journal_name
 
-def add_recommendations(topic_obj,
-                        limit=500,
-                        fields=FIELDS):
+
+def add_recommendations(topic_obj, limit=500, fields=FIELDS):
     """
     Add the recommendations to the positive articles
 
@@ -215,60 +262,61 @@ def add_recommendations(topic_obj,
     Returns:
         search_response.json() (dict): dictionary of the search response
     """
-    endpoint = 'https://api.semanticscholar.org/recommendations/v1/papers/'
-    params = {'fields': fields, 'limit': limit}
+    endpoint = "https://api.semanticscholar.org/recommendations/v1/papers/"
+    params = {"fields": fields, "limit": limit}
     # Select positive articles that have use_for_recommendation set to True
     positive_paper_ids = []
     # count = 0
-    for paper_id, paper_obj in topic_obj.paper_ids['positive'].items():
+    for paper_id, paper_obj in topic_obj.paper_ids["positive"].items():
         if paper_obj.use_for_recommendation is False:
             continue
         positive_paper_ids.append(paper_id)
     json = {
-            'positivePaperIds': positive_paper_ids,
-            'negativePaperIds': list(topic_obj.paper_ids['negative'].keys()),
-            }
+        "positivePaperIds": positive_paper_ids,
+        "negativePaperIds": list(topic_obj.paper_ids["negative"].keys()),
+    }
     status_code = 0
     while status_code not in [200, 400, 404]:
         # Make a POST request to the paper search batch
         # endpoint with the URL
-        search_response = requests.post(endpoint,
-                                        params=params,
-                                        json=json,
-                                        timeout=None)
+        search_response = requests.post(
+            endpoint, params=params, json=json, timeout=None
+        )
         status_code = search_response.status_code
         if status_code == 400:
-            print (f'Bad query parameters for {topic_obj.topic}.',
-                    status_code,
-                    search_response.json())
+            print(
+                f"Bad query parameters for {topic_obj.topic}.",
+                status_code,
+                search_response.json(),
+            )
             sys.exit()
         elif status_code == 404:
-            print (f'Input papers not found for {topic_obj.topic}.',
-                    status_code,
-                    search_response.json())
+            print(
+                f"Input papers not found for {topic_obj.topic}.",
+                status_code,
+                search_response.json(),
+            )
             break
     return search_response.json()
 
+
 def get_paper_details(paper_ids, fields=FIELDS):
-    """
-    Get the paper details
+    """Get the paper details with improved error handling"""
+    endpoint = "https://api.semanticscholar.org/graph/v1/paper/batch"
+    params = {"fields": fields}
+    json_data = {"ids": list(paper_ids)}
 
-    Args:
-        paper_ids (list): list of paper ids
+    session = create_session()
+    print(f"Fetching details for {len(paper_ids)} papers...")
+    response_data = handle_api_request(
+        session, endpoint, params=params, json=json_data, method="POST"
+    )
 
-    Returns:
-        search_response.json() (dict): dictionary of the search response
-    """
-    endpoint = 'https://api.semanticscholar.org/graph/v1/paper/batch'
-    params = {'fields': fields}
-    json = {'ids': list(paper_ids)}
-    status_code = 0
-    while status_code != 200:
-        # Make a POST request to the paper search batch
-        # endpoint with the URL
-        search_response = requests.post(endpoint, params=params, json=json, timeout=None)
-        status_code = search_response.status_code
-    return search_response.json()
+    if response_data is None:
+        print("Failed to fetch paper details")
+        return []
+    return response_data
+
 
 def get_author_details(all_authors_ids):
     """
@@ -286,11 +334,15 @@ def get_author_details(all_authors_ids):
     authors_ids = []
     for author_id in all_authors_ids:
         # check if author id contains only alphabets
-        if re.fullmatch(r'[A-Za-z ]+', author_id):
-            author_details_wo_id.append({'authorId': author_id,
-                                    'hIndex': None,
-                                    'name': author_id,
-                                    'citationCount': None})
+        if re.fullmatch(r"[A-Za-z ]+", author_id):
+            author_details_wo_id.append(
+                {
+                    "authorId": author_id,
+                    "hIndex": None,
+                    "name": author_id,
+                    "citationCount": None,
+                }
+            )
             continue
         authors_ids.append(author_id)
     # Loop over every 1000 authors
@@ -300,28 +352,24 @@ def get_author_details(all_authors_ids):
         if end_index > len(authors_ids):
             end_index = len(authors_ids)
         # Get the h-index of the authors
-        endpoint = 'https://api.semanticscholar.org/graph/v1/author/batch'
-        params={'fields': 'name,hIndex,citationCount'}
-        json = {
-                'ids': authors_ids[start_index:end_index]
-                }
+        endpoint = "https://api.semanticscholar.org/graph/v1/author/batch"
+        params = {"fields": "name,hIndex,citationCount"}
+        json = {"ids": authors_ids[start_index:end_index]}
         status_code = 0
         while status_code not in [200, 400]:
             # Make a POST request to the paper search batch
             # endpoint with the URL
-            search_response = requests.post(endpoint,
-                                            params=params,
-                                            json=json,
-                                            timeout=None)
+            search_response = requests.post(
+                endpoint, params=params, json=json, timeout=None
+            )
             status_code = search_response.status_code
             if status_code == 400:
-                print ('Bad query parameters.',
-                        status_code,
-                        search_response.json())
+                print("Bad query parameters.", status_code, search_response.json())
                 sys.exit()
         authors_details += search_response.json()
     authors_details += author_details_wo_id
     return authors_details
+
 
 def metrics_over_time_js(data) -> plt:
     """
@@ -331,7 +379,7 @@ def metrics_over_time_js(data) -> plt:
         data (list): list of dictionaries
         category_name (str): category name
         title (str): title of the graph
-    
+
     Returns:
         None
 
@@ -353,24 +401,25 @@ def metrics_over_time_js(data) -> plt:
     for _, paper_obj in data.items():
         # Exclude the articles with no publication date or citation count
         publication_date = paper_obj.info.publication_date
-        if publication_date is None or publication_date == '':
+        if publication_date is None or publication_date == "":
             continue
         citation_count = paper_obj.info.citation_count
-        if citation_count is None or citation_count == '':
+        if citation_count is None or citation_count == "":
             continue
-        year = publication_date.split('-')[0]
+        year = publication_date.split("-")[0]
         if year not in dic:
-            dic[year] = {'num_articles': 0, 'num_citations': 0}
-        dic[year]['num_articles'] += 1
-        dic[year]['num_citations'] += citation_count
+            dic[year] = {"num_articles": 0, "num_citations": 0}
+        dic[year]["num_articles"] += 1
+        dic[year]["num_citations"] += citation_count
     # Using noc and yop, plot the line graph with years on x-axis and number of citations on y-axis
     df = pd.DataFrame(dic).T
     # Make another colum for the year
-    df['Year'] = df.index
+    df["Year"] = df.index
     # Sort by year
-    df = df.sort_values(by='Year', ascending=True)
+    df = df.sort_values(by="Year", ascending=True)
     # print (df)
     return df
+
 
 def all_citations_js(dic) -> list:
     """
@@ -414,17 +463,18 @@ def all_citations_js(dic) -> list:
     for category_name, category_name_items in dic.items():
         sum_citations = 0
         # categories.append(category_name)
-        for item in category_name_items['most_cited_articles']:
-            if item['citationCount'] is None:
+        for item in category_name_items["most_cited_articles"]:
+            if item["citationCount"] is None:
                 continue
-            sum_citations += int(item['citationCount'])
+            sum_citations += int(item["citationCount"])
         # num_citations.append(sum_citations)
         dic_all_citations[category_name] = sum_citations
     return dic_all_citations
 
+
 # Function to read YAML file
 def read_yaml(file_path):
-    '''
+    """
     Function to read YAML file
 
     Args:
@@ -435,14 +485,15 @@ def read_yaml(file_path):
 
     Example:
         data = read_yaml('data.yaml')
-    '''
-    with open(file_path, 'r', encoding='utf-8') as file:
+    """
+    with open(file_path, "r", encoding="utf-8") as file:
         data = yaml.safe_load(file)
     return data
 
+
 # Function to write YAML file
 def write_yaml(data, file_path):
-    '''
+    """
     Function to write YAML file
 
     Args:
@@ -454,6 +505,6 @@ def write_yaml(data, file_path):
 
     Example:
         write_yaml(data, 'data.yaml')
-    '''
-    with open(file_path, 'w', encoding='utf-8') as file:
+    """
+    with open(file_path, "w", encoding="utf-8") as file:
         yaml.dump(data, file, default_flow_style=False)
