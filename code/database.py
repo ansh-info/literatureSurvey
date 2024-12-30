@@ -1,6 +1,5 @@
-import os
-from dataclasses import dataclass
-from datetime import datetime
+#!/usr/bin/env python3
+
 from typing import Dict, List, Optional
 
 import mysql.connector
@@ -10,11 +9,11 @@ from mysql.connector import Error
 class DatabaseManager:
     def __init__(self):
         self.config = {
-            "host": os.getenv("MYSQL_HOST", "localhost"),
-            "user": os.getenv("MYSQL_USER", "scholar_user"),
-            "password": os.getenv("MYSQL_PASSWORD", "scholar_pass"),
-            "database": os.getenv("MYSQL_DATABASE", "scholar_db"),
-            "port": int(os.getenv("MYSQL_PORT", 3306)),
+            "host": "localhost",
+            "user": "scholar_user",
+            "password": "scholar_pass",
+            "database": "scholar_db",
+            "port": 3306,
         }
 
     def get_connection(self):
@@ -42,7 +41,7 @@ class DatabaseManager:
             cursor.close()
             conn.close()
 
-    def insert_paper(self, paper_obj) -> None:
+    def insert_paper(self, article_obj) -> None:
         """Insert or update paper details"""
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -62,21 +61,21 @@ class DatabaseManager:
                     h_index = VALUES(h_index)
             """
             values = (
-                paper_obj.article_id,
-                paper_obj.info.title,
-                paper_obj.info.abstract,
-                paper_obj.info.journal,
-                paper_obj.info.url,
-                paper_obj.info.publication_date,
-                paper_obj.info.citation_count,
-                paper_obj.info.h_index,
+                article_obj.article_id,
+                article_obj.info.title,
+                article_obj.info.abstract,
+                article_obj.info.journal,
+                article_obj.info.url,
+                article_obj.info.publication_date,
+                article_obj.info.citation_count,
+                article_obj.info.h_index,
             )
             cursor.execute(query, values)
 
             # Insert authors
-            for author in paper_obj.authors:
+            for author in article_obj.authors:
                 self.insert_author(cursor, author)
-                self.link_paper_author(cursor, paper_obj.article_id, author.author_id)
+                self.link_paper_author(cursor, article_obj.article_id, author.author_id)
 
             conn.commit()
         finally:
@@ -131,22 +130,6 @@ class DatabaseManager:
             cursor.execute(
                 query, (topic_id, paper_id, paper_type, use_for_recommendation)
             )
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
-
-    def insert_recommendation(self, source_id: str, recommended_id: str) -> None:
-        """Insert paper recommendation"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
-            query = """
-                INSERT IGNORE INTO paper_recommendations 
-                    (source_paper_id, recommended_paper_id)
-                VALUES (%s, %s)
-            """
-            cursor.execute(query, (source_id, recommended_id))
             conn.commit()
         finally:
             cursor.close()
