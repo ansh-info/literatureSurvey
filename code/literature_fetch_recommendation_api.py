@@ -15,9 +15,13 @@ from author import Author
 from data_fetcher import DataFetcher
 from database import DatabaseManager
 from jinja2 import Environment, FileSystemLoader
-from utils import (add_paper_details, add_recommendations,
+from topic import Topic
+from utils import (add_negative_articles, add_paper_details,
+                   add_recommendations,
                    add_recommendations_to_positive_articles,
-                   get_author_details, get_paper_details, update_h_index)
+                   add_recommended_articles_to_zotero, get_author_details,
+                   get_paper_details, metrics_over_time_js, read_yaml,
+                   update_h_index, update_paper_details, write_yaml)
 
 
 def print_divider():
