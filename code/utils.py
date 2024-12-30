@@ -38,31 +38,31 @@ def create_session():
     return session
 
 
-def handle_api_request(session, url, params=None, json=None, method="GET"):
+def handle_api_request(session, endpoint, params=None, json=None, method="GET"):
     """Handle API requests with rate limiting and retries"""
     try:
         if method == "GET":
-            response = session.get(url, params=params, timeout=30)
+            response = session.get(endpoint, params=params, timeout=30)
         else:  # POST
-            response = session.post(url, params=params, json=json, timeout=30)
+            response = session.post(endpoint, params=params, json=json, timeout=30)
 
         if response.status_code == 429:
             wait_time = int(response.headers.get("Retry-After", 60))
             print(f"Rate limited. Waiting {wait_time} seconds...")
             time.sleep(wait_time)
-            return handle_api_request(session, url, params, json, method)
+            return handle_api_request(session, endpoint, params, json, method)
 
         response.raise_for_status()
         time.sleep(1)  # Basic rate limiting
         return response.json()
 
     except requests.exceptions.Timeout:
-        print("Request timed out. Retrying...")
+        print(f"Request to {endpoint} timed out. Retrying...")
         time.sleep(2)
-        return handle_api_request(session, url, params, json, method)
+        return handle_api_request(session, endpoint, params, json, method)
 
     except Exception as e:
-        print(f"API request failed: {e}")
+        print(f"API request failed for {endpoint}: {e}")
         return None
 
 
@@ -211,12 +211,12 @@ def update_h_index(article_obj, dic):
 def add_recommendations_to_positive_articles(article_id, limit=500, fields=FIELDS):
     """Get paper recommendations with improved error handling"""
     endpoint = f"https://api.semanticscholar.org/recommendations/v1/papers/forpaper/{article_id}"
-    params = {"fields": fields, "limit": limit}
+    params = {"fields": fields, "limit": limit, "from": "all-cs"}
 
     session = create_session()
     print(f"Fetching recommendations for paper {article_id}")
-    response_data = handle_api_request(session, endpoint, params=params)
 
+    response_data = handle_api_request(session, endpoint, params=params)
     if response_data is None:
         print("Failed to fetch recommendations")
         return []
@@ -301,17 +301,17 @@ def add_recommendations(topic_obj, limit=500, fields=FIELDS):
 
 
 def get_paper_details(paper_ids, fields=FIELDS):
-    """Get the paper details with improved error handling"""
+    """Get paper details with improved error handling"""
     endpoint = "https://api.semanticscholar.org/graph/v1/paper/batch"
     params = {"fields": fields}
     json_data = {"ids": list(paper_ids)}
 
     session = create_session()
     print(f"Fetching details for {len(paper_ids)} papers...")
+
     response_data = handle_api_request(
         session, endpoint, params=params, json=json_data, method="POST"
     )
-
     if response_data is None:
         print("Failed to fetch paper details")
         return []
@@ -319,21 +319,12 @@ def get_paper_details(paper_ids, fields=FIELDS):
 
 
 def get_author_details(all_authors_ids):
-    """
-    Get the author details
-
-    Args:
-        authors_ids (list): list of authors ids
-
-    Returns:
-        authors_details (list): list of authors details
-    """
-    # Some authors have no ids assigned, and in that case their ID is their name
-    # So here we exclude such authors and already prepare their output
+    """Get author details with improved error handling"""
     author_details_wo_id = []
     authors_ids = []
+
+    # Handle authors without IDs
     for author_id in all_authors_ids:
-        # check if author id contains only alphabets
         if re.fullmatch(r"[A-Za-z ]+", author_id):
             author_details_wo_id.append(
                 {
@@ -345,30 +336,28 @@ def get_author_details(all_authors_ids):
             )
             continue
         authors_ids.append(author_id)
-    # Loop over every 1000 authors
+
+    # Process authors in batches
+    session = create_session()
     authors_details = []
+
     for start_index in range(0, len(authors_ids), 1000):
-        end_index = start_index + 1000
-        if end_index > len(authors_ids):
-            end_index = len(authors_ids)
-        # Get the h-index of the authors
+        end_index = min(start_index + 1000, len(authors_ids))
+        batch_ids = authors_ids[start_index:end_index]
+
         endpoint = "https://api.semanticscholar.org/graph/v1/author/batch"
         params = {"fields": "name,hIndex,citationCount"}
-        json = {"ids": authors_ids[start_index:end_index]}
-        status_code = 0
-        while status_code not in [200, 400]:
-            # Make a POST request to the paper search batch
-            # endpoint with the URL
-            search_response = requests.post(
-                endpoint, params=params, json=json, timeout=None
-            )
-            status_code = search_response.status_code
-            if status_code == 400:
-                print("Bad query parameters.", status_code, search_response.json())
-                sys.exit()
-        authors_details += search_response.json()
-    authors_details += author_details_wo_id
-    return authors_details
+        json_data = {"ids": batch_ids}
+
+        print(f"Fetching details for authors {start_index+1} to {end_index}")
+        response_data = handle_api_request(
+            session, endpoint, params=params, json=json_data, method="POST"
+        )
+
+        if response_data:
+            authors_details.extend(response_data)
+
+    return authors_details + author_details_wo_id
 
 
 def metrics_over_time_js(data) -> plt:
