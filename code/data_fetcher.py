@@ -47,62 +47,93 @@ class DataFetcher:
         print(f"Fetching details for paper {paper_id}")
         return handle_api_request(self.session, endpoint, params=params)
 
-    def process_papers(csv_path: str, db: DatabaseManager):
-        """Process the CSV file and store data in the database with improved paper type handling"""
-        with open(csv_path, "r", encoding="utf-8-sig") as f:
-            df = pd.read_csv(f)
-            total_papers = len(df)
-            print(f"Found {total_papers} papers to process")
 
-            for index, row in df.iterrows():
-                try:
-                    print(f"\nProcessing paper {index + 1}/{total_papers}")
+    def fetch_author_details(self, author_ids: List[str]) -> List[Dict]:
+        """Fetch author details from Semantic Scholar API"""
+        endpoint = "https://api.semanticscholar.org/graph/v1/author/batch"
+        params = {"fields": "authorId,name,hIndex,citationCount"}
+        
+        # Process in batches of 100 to avoid API limits
+        author_details = []
+        for i in range(0, len(author_ids), 100):
+            batch_ids = author_ids[i:i+100]
+            data = {"ids": batch_ids}
+            
+            response = handle_api_request(
+                self.session, 
+                endpoint, 
+                params=params, 
+                json=data,
+                method="POST"
+            )
+            
+            if response:
+                author_details.extend(response)
+                
+            time.sleep(1)  # Rate limiting
+            
+        return author_details
 
-                    # Process topic
-                    topic = row["Topic"].strip()
-                    topic_id = db.insert_topic(topic)
-                    print(f"✓ Topic saved: {topic}")
 
-                    # Extract paper ID and usage flag
-                    paper_id = row["URL"].strip().split("/")[-1].split("?")[0]
-                    use_for_rec = str(row["Use"]).strip() == "1"
-
-                    # Determine paper type
-                    # By default, papers are considered "positive" for their own topic
-                    paper_type = "positive"
-
-                    # Optional: If you want to specify paper type in CSV, add a column
-                    if "Type" in row:
-                        paper_type = row["Type"].strip().lower()
-                        if paper_type not in ["positive", "negative"]:
-                            paper_type = "positive"
-
-                    # Fetch paper details
-                    paper_data = get_paper_details([paper_id])[0]
-                    if not paper_data:
-                        print(f"✗ Could not fetch details for paper {paper_id}")
-                        continue
-
-                    # Create and populate Article object
-                    article = Article(paper_id, use_for_recommendation=use_for_rec)
-                    add_paper_details(article, paper_data)
-
-                    # Fetch and update author details including h-index
-                    author_ids = [
-                        author["authorId"] for author in paper_data.get("authors", [])
-                    ]
-                    author_details = get_author_details(author_ids)
-                    update_h_index(article, author_details)
-
-                    # Store in database
-                    db.insert_paper(article)
-                    db.link_topic_paper(topic_id, paper_id, paper_type, use_for_rec)
-
-                    print(f"✓ Successfully processed: {article.info.title}")
-                    print(
-                        f"  Paper type: {paper_type}, Use for recommendations: {use_for_rec}"
+    def process_paper(self, paper_data: Dict, topic_id: int, use_for_rec: bool, paper_type: str):
+        """Process a single paper with complete author information"""
+        try:
+            # Create Article object
+            article = Article(paper_data["paperId"], use_for_recommendation=use_for_rec)
+            
+            # Add basic paper details
+            add_paper_details(article, paper_data)
+            
+            # Process authors
+            author_ids = []
+            for author_data in paper_data.get("authors", []):
+                author_id = author_data.get("authorId")
+                if author_id:
+                    author_ids.append(author_id)
+                    author = Author(
+                        author_id=author_id,
+                        author_name=author_data["name"]
                     )
+                    article.authors.append(author)
+            
+            # Fetch complete author details including h-index
+            if author_ids:
+                author_details = self.fetch_author_details(author_ids)
+                update_h_index(article, author_details)
+            
+            # Store in database
+            self.db.insert_paper(article)
+            self.db.link_topic_paper(topic_id, article.article_id, paper_type, use_for_rec)
+            
+            return article
+            
+        except Exception as e:
+            print(f"Error processing paper {paper_data.get('paperId')}: {e}")
+            return None
 
-                except Exception as e:
-                    print(f"Error processing row {index + 1}: {e}")
-                    continue
+     def process_papers_from_csv(self, csv_path: str):
+        """Process all papers from CSV with improved author handling"""
+        papers = self.read_csv(csv_path)
+        total = len(papers)
+        
+        for idx, paper in enumerate(papers, 1):
+            print(f"\nProcessing paper {idx}/{total}")
+            
+            # Get paper details
+            paper_data = self.fetch_paper_details(paper["paper_id"])
+            if not paper_data:
+                continue
+                
+            # Process the paper with author data
+            article = self.process_paper(
+                paper_data,
+                paper["topic_id"],
+                paper["use_for_recommendation"],
+                paper.get("paper_type", "positive")
+            )
+            
+            if article:
+                print(f"✓ Successfully processed: {article.info.title}")
+                print(f"  Authors: {len(article.authors)}")
+                print(f"  H-index: {article.info.h_index}")
+
