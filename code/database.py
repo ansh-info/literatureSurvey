@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import time
 from typing import Dict, List, Optional
 
 import mysql.connector
@@ -14,24 +15,77 @@ class DatabaseManager:
             "password": "scholar_pass",
             "database": "scholar_db",
             "port": 3306,
+            "connect_timeout": 60,
+            "pool_size": 5,
+            "pool_reset_session": True,
         }
 
     def get_connection(self):
         try:
             conn = mysql.connector.connect(**self.config)
+            cursor = conn.cursor()
+            # Set session variables to help with timeouts
+            cursor.execute("SET SESSION wait_timeout=600")
+            cursor.execute("SET SESSION interactive_timeout=600")
+            cursor.close()
             return conn
         except Error as e:
             print(f"Error connecting to MySQL: {e}")
             raise
 
+    def execute_with_retry(self, operation, max_retries=3):
+        """Execute database operation with retry logic"""
+        last_error = None
+        for attempt in range(max_retries):
+            conn = None
+            cursor = None
+            try:
+                conn = self.get_connection()
+                cursor = conn.cursor()
+                result = operation(cursor)
+                conn.commit()
+                return result
+            except mysql.connector.Error as e:
+                last_error = e
+                if cursor:
+                    cursor.close()
+                if conn:
+                    conn.rollback()
+                if e.errno == 1205:  # Lock timeout error
+                    if attempt < max_retries - 1:
+                        wait_time = min(2**attempt, 30)  # Cap wait time at 30 seconds
+                        print(
+                            f"Lock timeout, retrying in {wait_time} seconds... (attempt {attempt + 1})"
+                        )
+                        time.sleep(wait_time)
+                        continue
+                raise
+            except Exception as e:
+                last_error = e
+                if cursor:
+                    cursor.close()
+                if conn:
+                    conn.rollback()
+                if attempt < max_retries - 1:
+                    wait_time = min(2**attempt, 30)
+                    print(
+                        f"Database error: {e}, retrying in {wait_time} seconds... (attempt {attempt + 1})"
+                    )
+                    time.sleep(wait_time)
+                    continue
+                raise
+            finally:
+                if cursor:
+                    cursor.close()
+                if conn:
+                    conn.close()
+        if last_error:
+            raise last_error
+
     def insert_topic(self, topic_name: str) -> int:
-        """
-        Insert a topic and return its ID.
-        If topic already exists, returns existing ID.
-        """
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
+        """Insert a topic and return its ID with retry logic"""
+
+        def operation(cursor):
             # First try to find if topic exists
             cursor.execute("SELECT id FROM topics WHERE name = %s", (topic_name,))
             result = cursor.fetchone()
@@ -41,24 +95,15 @@ class DatabaseManager:
 
             # If not exists, insert new topic
             cursor.execute("INSERT INTO topics (name) VALUES (%s)", (topic_name,))
-            conn.commit()
-
-            # Get the ID of the newly inserted topic
             cursor.execute("SELECT id FROM topics WHERE name = %s", (topic_name,))
-            topic_id = cursor.fetchone()[0]
+            return cursor.fetchone()[0]
 
-            return topic_id
-
-        finally:
-            cursor.close()
-            conn.close()
+        return self.execute_with_retry(operation)
 
     def insert_paper(self, article_obj) -> None:
-        """Insert or update paper details"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
-            # Insert paper
+        """Insert or update paper details with retry logic"""
+
+        def operation(cursor):
             query = """
                 INSERT INTO papers (id, title, abstract, journal, url, 
                                   publication_date, citation_count, h_index)
@@ -84,28 +129,12 @@ class DatabaseManager:
             )
             cursor.execute(query, values)
 
-            # Process authors
-            for idx, author in enumerate(article_obj.authors, 1):
-                # Insert author
-                self.insert_author(author)
-                # Link author to paper with order
-                self.link_paper_author(article_obj.article_id, author.author_id, idx)
-
-            conn.commit()
-
-        except Exception as e:
-            conn.rollback()
-            print(f"Error inserting paper: {e}")
-            raise
-        finally:
-            cursor.close()
-            conn.close()
+        return self.execute_with_retry(operation)
 
     def insert_author(self, author_obj) -> None:
-        """Insert or update author details"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
+        """Insert or update author with retry logic"""
+
+        def operation(cursor):
             query = """
                 INSERT INTO authors (id, name, h_index, citation_count)
                 VALUES (%s, %s, %s, %s)
@@ -121,10 +150,8 @@ class DatabaseManager:
                 author_obj.citation_count,
             )
             cursor.execute(query, values)
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
+
+        return self.execute_with_retry(operation)
 
     def insert_paper_author(self, paper_id: str, author_id: str, author_order: int):
         """Create paper-author relationship with order"""
@@ -144,11 +171,10 @@ class DatabaseManager:
 
     def insert_paper_recommendations(
         self, source_paper_id: str, recommended_paper_id: str, recommendation_order: int
-    ):
-        """Store paper recommendations with order"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
+    ) -> None:
+        """Store paper recommendations with retry logic"""
+
+        def operation(cursor):
             query = """
                 INSERT INTO paper_recommendations 
                     (source_paper_id, recommended_paper_id, recommendation_order)
@@ -159,16 +185,13 @@ class DatabaseManager:
             cursor.execute(
                 query, (source_paper_id, recommended_paper_id, recommendation_order)
             )
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
 
-    def store_paper_markdown(self, paper_id: str, markdown_content: str):
-        """Store paper's markdown content"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
+        return self.execute_with_retry(operation)
+
+    def store_paper_markdown(self, paper_id: str, markdown_content: str) -> None:
+        """Store paper's markdown content with retry logic"""
+
+        def operation(cursor):
             query = """
                 INSERT INTO paper_markdown (paper_id, markdown_content)
                 VALUES (%s, %s)
@@ -177,46 +200,23 @@ class DatabaseManager:
                     last_updated = CURRENT_TIMESTAMP
             """
             cursor.execute(query, (paper_id, markdown_content))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
 
-    def store_topic_markdown(self, topic_id: int, markdown_content: str):
-        """Store topic's markdown content"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
-            query = """
-                INSERT INTO topic_markdown (topic_id, markdown_content)
-                VALUES (%s, %s)
-                ON DUPLICATE KEY UPDATE 
-                    markdown_content = VALUES(markdown_content),
-                    last_updated = CURRENT_TIMESTAMP
-            """
-            cursor.execute(query, (topic_id, markdown_content))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
+        return self.execute_with_retry(operation)
 
     def link_paper_author(
         self, paper_id: str, author_id: str, author_order: int = 1
     ) -> None:
-        """Create paper-author relationship"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
+        """Create paper-author relationship with retry logic"""
+
+        def operation(cursor):
             query = """
                 INSERT INTO paper_authors (paper_id, author_id, author_order)
                 VALUES (%s, %s, %s)
                 ON DUPLICATE KEY UPDATE author_order = VALUES(author_order)
             """
             cursor.execute(query, (paper_id, author_id, author_order))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
+
+        return self.execute_with_retry(operation)
 
     def link_topic_paper(
         self,
@@ -225,10 +225,9 @@ class DatabaseManager:
         paper_type: str = "positive",
         use_for_recommendation: bool = True,
     ) -> None:
-        """Link paper to topic with type and recommendation flag"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
+        """Link paper to topic with retry logic"""
+
+        def operation(cursor):
             query = """
                 INSERT INTO topic_papers 
                     (topic_id, paper_id, paper_type, use_for_recommendation)
@@ -240,7 +239,5 @@ class DatabaseManager:
             cursor.execute(
                 query, (topic_id, paper_id, paper_type, use_for_recommendation)
             )
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
+
+        return self.execute_with_retry(operation)
