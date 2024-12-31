@@ -118,59 +118,100 @@ class DataFetcher:
         """Process a single paper with all related data"""
         try:
             paper_id = paper_data['paperId']
+            print(f"Processing paper {paper_id}")
             
-            # Create and store paper
+            # Step 1: Create article object and add basic details
             article = Article(paper_id, use_for_recommendation=use_for_rec)
             add_paper_details(article, paper_data)
             
-            # Process authors
-            article.authors = self.process_authors(paper_id, paper_data.get('authors', []))
-            
-            # Update h-index if we have authors
-            if article.authors:
-                author_details = get_author_details([a.author_id for a in article.authors])
-                update_h_index(article, author_details)
-            
-            # Store paper
+            # Step 2: Store the paper first (this creates the record that author relationships will reference)
+            print("Storing paper basic details...")
             self.db.insert_paper(article)
+            
+            # Step 3: Process and store authors after paper exists in DB
+            print("Processing authors...")
+            authors = []
+            for idx, author_data in enumerate(paper_data.get('authors', []), 1):
+                author_id = author_data.get('authorId') or author_data.get('name')
+                if not author_id:
+                    continue
+
+                # Create author object
+                author = Author(
+                    author_id=author_id,
+                    author_name=author_data.get('name')
+                )
+                authors.append(author)
+                
+                # Store author and link to paper
+                print(f"Storing author {idx}: {author.author_name}")
+                self.db.insert_author(author)
+                self.db.link_paper_author(paper_id, author_id, idx)
+
+            article.authors = authors
+            
+            # Step 4: Update h-index if we have authors
+            if article.authors:
+                print("Fetching author details...")
+                author_ids = [a.author_id for a in article.authors]
+                author_details = get_author_details(author_ids)
+                update_h_index(article, author_details)
+                
+                # Update paper with new h-index
+                self.db.insert_paper(article)  # This will update existing record
+            
+            # Step 5: Link to topic
+            print("Linking paper to topic...")
             self.db.link_topic_paper(topic_id, paper_id, paper_type, use_for_rec)
             
-            # Generate and store markdown
+            # Step 6: Generate and store markdown
+            print("Generating markdown...")
             markdown = self.generate_paper_markdown(article)
             self.db.store_paper_markdown(paper_id, markdown)
             
-            # Fetch and store recommendations if needed
+            # Step 7: Process recommendations if needed
             if use_for_rec and paper_type == "positive":
+                print("Processing recommendations...")
                 self.process_recommendations(paper_id)
                 
             return article
             
         except Exception as e:
-            print(f"Error processing paper {paper_data.get('paperId')}: {e}")
+            print(f"Error details: {str(e)}")
+            if "foreign key constraint fails" in str(e):
+                print("Foreign key error - check table relationships and data consistency")
             return None
 
     def process_recommendations(self, paper_id: str, limit: int = 10):
         """Fetch and store paper recommendations"""
         try:
+            print(f"Fetching recommendations for paper {paper_id}")
             recommendations = add_recommendations_to_positive_articles(paper_id, limit)
             
             for idx, rec_data in enumerate(recommendations, 1):
                 if not rec_data.get('publicationDate'):
                     continue
+                
+                try:
+                    # First process the recommended paper
+                    rec_paper = self.process_paper(
+                        rec_data,
+                        None,  # No topic for recommendations
+                        False,  # Don't use for recommendations
+                        "recommended"
+                    )
                     
-                # Store recommendation relationship
-                self.db.insert_paper_recommendations(paper_id, rec_data['paperId'], idx)
-                
-                # Process recommended paper (without further recommendations)
-                self.process_paper(
-                    rec_data,
-                    None,  # No topic for recommendations
-                    False,  # Don't use for recommendations
-                    "recommended"
-                )
-                
+                    if rec_paper:
+                        # Then store the recommendation relationship
+                        self.db.insert_paper_recommendations(paper_id, rec_data['paperId'], idx)
+                        print(f"Stored recommendation {idx}: {rec_paper.info.title}")
+                        
+                except Exception as e:
+                    print(f"Error processing recommendation {idx}: {str(e)}")
+                    continue
+                    
         except Exception as e:
-            print(f"Error processing recommendations for {paper_id}: {e}")
+            print(f"Error in recommendations for {paper_id}: {str(e)}")
 
     def generate_paper_markdown(self, article: Article) -> str:
         """Generate markdown content for a paper"""
@@ -197,14 +238,14 @@ class DataFetcher:
         ])
         
         return template.format(
-            title=article.info.title,
-            authors=authors_str,
-            abstract=article.info.abstract,
-            journal=article.info.journal,
-            publication_date=article.info.publication_date,
-            citation_count=article.info.citation_count,
-            h_index=article.info.h_index,
-            url=article.info.url
+            title=article.info.title or "No title",
+            authors=authors_str or "No authors listed",
+            abstract=article.info.abstract or "No abstract available",
+            journal=article.info.journal or "No journal listed",
+            publication_date=article.info.publication_date or "No date available",
+            citation_count=article.info.citation_count or 0,
+            h_index=article.info.h_index or 0,
+            url=article.info.url or "No URL available"
         )
 
      def process_papers_from_csv(self, csv_path: str):
