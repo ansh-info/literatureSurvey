@@ -1,5 +1,6 @@
 import csv
 import os
+import time
 from typing import Dict, List
 
 import requests
@@ -124,63 +125,90 @@ class DataFetcher:
             article = Article(paper_id, use_for_recommendation=use_for_rec)
             add_paper_details(article, paper_data)
             
-            # Step 2: Store the paper first (this creates the record that author relationships will reference)
+            # Step 2: Store the paper first
             print("Storing paper basic details...")
-            self.db.insert_paper(article)
+            try:
+                self.db.insert_paper(article)
+            except Exception as e:
+                print(f"Error storing paper: {e}")
+                return None
             
-            # Step 3: Process and store authors after paper exists in DB
+            # Step 3: Process authors in smaller batches
             print("Processing authors...")
             authors = []
-            for idx, author_data in enumerate(paper_data.get('authors', []), 1):
-                author_id = author_data.get('authorId') or author_data.get('name')
-                if not author_id:
-                    continue
-
-                # Create author object
-                author = Author(
-                    author_id=author_id,
-                    author_name=author_data.get('name')
-                )
-                authors.append(author)
+            author_batch_size = 4  # Process authors in smaller batches
+            
+            author_data_list = paper_data.get('authors', [])
+            for i in range(0, len(author_data_list), author_batch_size):
+                batch = author_data_list[i:i + author_batch_size]
+                print(f"Processing author batch {i//author_batch_size + 1}")
                 
-                # Store author and link to paper
-                print(f"Storing author {idx}: {author.author_name}")
-                self.db.insert_author(author)
-                self.db.link_paper_author(paper_id, author_id, idx)
+                for idx, author_data in enumerate(batch, i + 1):
+                    try:
+                        author_id = author_data.get('authorId') or author_data.get('name')
+                        if not author_id:
+                            continue
 
+                        author = Author(
+                            author_id=author_id,
+                            author_name=author_data.get('name')
+                        )
+                        authors.append(author)
+                        
+                        print(f"Storing author {idx}: {author.author_name}")
+                        self.db.insert_author(author)
+                        self.db.link_paper_author(paper_id, author_id, idx)
+                        
+                    except Exception as e:
+                        print(f"Error processing author {idx}: {e}")
+                        continue
+                        
+                time.sleep(1)  # Small delay between batches
+            
             article.authors = authors
             
-            # Step 4: Update h-index if we have authors
+            # Step 4: Update h-index in batches
             if article.authors:
                 print("Fetching author details...")
                 author_ids = [a.author_id for a in article.authors]
-                author_details = get_author_details(author_ids)
-                update_h_index(article, author_details)
                 
-                # Update paper with new h-index
-                self.db.insert_paper(article)  # This will update existing record
+                for i in range(0, len(author_ids), author_batch_size):
+                    batch_ids = author_ids[i:i + author_batch_size]
+                    print(f"Fetching details for authors {i+1} to {i+len(batch_ids)}")
+                    author_details = get_author_details(batch_ids)
+                    time.sleep(1)  # Rate limiting
+                    
+                    # Update each author in the batch
+                    for author_detail in author_details:
+                        if author_detail:
+                            self.update_single_author(author_detail)
+                
+                # Final h-index update for the paper
+                update_h_index(article, author_details)
+                self.db.insert_paper(article)
             
             # Step 5: Link to topic
             print("Linking paper to topic...")
             self.db.link_topic_paper(topic_id, paper_id, paper_type, use_for_rec)
             
-            # Step 6: Generate and store markdown
-            print("Generating markdown...")
-            markdown = self.generate_paper_markdown(article)
-            self.db.store_paper_markdown(paper_id, markdown)
-            
-            # Step 7: Process recommendations if needed
-            if use_for_rec and paper_type == "positive":
-                print("Processing recommendations...")
-                self.process_recommendations(paper_id)
-                
             return article
             
         except Exception as e:
             print(f"Error details: {str(e)}")
-            if "foreign key constraint fails" in str(e):
-                print("Foreign key error - check table relationships and data consistency")
             return None
+
+     def update_single_author(self, author_detail):
+        """Update a single author's details"""
+        try:
+            author = Author(
+                author_id=author_detail['authorId'],
+                author_name=author_detail.get('name'),
+                h_index=author_detail.get('hIndex'),
+                citation_count=author_detail.get('citationCount')
+            )
+            self.db.insert_author(author)
+        except Exception as e:
+            print(f"Error updating author {author_detail.get('authorId')}: {e}")
 
     def process_recommendations(self, paper_id: str, limit: int = 10):
         """Fetch and store paper recommendations"""
