@@ -158,42 +158,44 @@ def add_paper_details(article_obj, article_data):
 
 def update_h_index(article_obj, authors_data):
     """
-    Update the h-index of the article based on a weighted average of its authors' h-indices
+    Update article h-index based on authors' data with improved calculation
     """
-    authors_h_index_list = []
-    total_citations = 0
+    if not authors_data or not article_obj.authors:
+        article_obj.info.h_index = 0
+        return
 
-    for row in authors_data:
-        if row is None:
-            continue
+    # Match and update author data
+    author_metrics = []
+    for author in article_obj.authors:
+        for author_data in authors_data:
+            if author_data and author.author_id == author_data.get("authorId"):
+                h_index = author_data.get("hIndex", 0) or 0
+                citations = author_data.get("citationCount", 0) or 0
 
-        for author in article_obj.authors:
-            if author.author_id == row["authorId"]:
-                # Update author information
-                author.h_index = row.get("hIndex", 0)
-                author.name = row.get("name", author.author_name)
-                author.citation_count = row.get("citationCount", 0)
+                author.h_index = h_index
+                author.citation_count = citations
+                author_metrics.append({"h_index": h_index, "citations": citations})
+                break
 
-                # Add to calculations if h-index exists
-                if row.get("hIndex") is not None:
-                    authors_h_index_list.append(row["hIndex"])
-                    total_citations += row.get("citationCount", 0)
+    if not author_metrics:
+        article_obj.info.h_index = 0
+        return
 
     # Calculate weighted h-index
-    if len(authors_h_index_list) > 0:
-        # Base h-index is the weighted average of authors' h-indices
-        weighted_h_index = sum(authors_h_index_list) / len(authors_h_index_list)
+    total_h_index = sum(m["h_index"] for m in author_metrics)
+    total_citations = sum(m["citations"] for m in author_metrics)
 
-        # Adjust based on paper's own citation count
-        if article_obj.info.citation_count:
-            citation_factor = min(1.5, (article_obj.info.citation_count / 100) + 1)
-            weighted_h_index *= citation_factor
+    # Base h-index is average of authors
+    base_h_index = total_h_index / len(author_metrics)
 
-        article_obj.info.h_index = round(weighted_h_index, 2)
+    # Adjust based on paper's own citations
+    if article_obj.info.citation_count:
+        citation_factor = min(1.5, (article_obj.info.citation_count / 100) + 1)
+        final_h_index = base_h_index * citation_factor
     else:
-        article_obj.info.h_index = 0
+        final_h_index = base_h_index
 
-    return article_obj.info.h_index
+    article_obj.info.h_index = round(final_h_index, 2)
 
 
 def add_recommendations_to_positive_articles(article_id, limit=500, fields=FIELDS):
