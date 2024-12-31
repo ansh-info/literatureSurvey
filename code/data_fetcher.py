@@ -75,41 +75,114 @@ class DataFetcher:
         return author_details
 
 
-    def process_paper(self, paper_data: Dict, topic_id: int, use_for_rec: bool, paper_type: str):
-        """Process a single paper with complete author information"""
+    def process_paper(self, paper_data: Dict, topic_id: int, use_for_rec: bool, paper_type: str = "positive"):
+        """Process a single paper with complete data persistence"""
         try:
             # Create Article object
             article = Article(paper_data["paperId"], use_for_recommendation=use_for_rec)
-            
-            # Add basic paper details
             add_paper_details(article, paper_data)
-            
+
             # Process authors
-            author_ids = []
-            for author_data in paper_data.get("authors", []):
-                author_id = author_data.get("authorId")
-                if author_id:
-                    author_ids.append(author_id)
-                    author = Author(
-                        author_id=author_id,
-                        author_name=author_data["name"]
-                    )
-                    article.authors.append(author)
-            
-            # Fetch complete author details including h-index
+            for idx, author_data in enumerate(paper_data.get("authors", []), 1):
+                author_id = author_data.get("authorId") or author_data["name"]
+                author = Author(
+                    author_id=author_id,
+                    author_name=author_data["name"]
+                )
+                article.authors.append(author)
+                
+                # Store author and paper-author relationship
+                self.db.insert_author(author)
+                self.db.insert_paper_author(article.article_id, author.author_id, idx)
+
+            # Fetch and store author details including h-index
+            author_ids = [a.author_id for a in article.authors]
             if author_ids:
-                author_details = self.fetch_author_details(author_ids)
+                author_details = get_author_details(author_ids)
                 update_h_index(article, author_details)
-            
-            # Store in database
+                
+                # Update authors with their details
+                for author_detail in author_details:
+                    if author_detail:
+                        author = Author(
+                            author_id=author_detail["authorId"],
+                            author_name=author_detail["name"],
+                            h_index=author_detail.get("hIndex"),
+                            citation_count=author_detail.get("citationCount")
+                        )
+                        self.db.insert_author(author)
+
+            # Store paper in database
             self.db.insert_paper(article)
             self.db.link_topic_paper(topic_id, article.article_id, paper_type, use_for_rec)
-            
+
+            # Generate and store markdown
+            markdown_content = self.generate_paper_markdown(article)
+            self.db.store_paper_markdown(article.article_id, markdown_content)
+
             return article
-            
+
         except Exception as e:
             print(f"Error processing paper {paper_data.get('paperId')}: {e}")
             return None
+
+     def process_recommendations(self, source_paper_id: str, recommendations: List[Dict], limit: int = 10):
+        """Process and store paper recommendations"""
+        try:
+            for idx, rec_data in enumerate(recommendations[:limit], 1):
+                if not rec_data.get('publicationDate'):
+                    continue
+
+                # Store recommendation relationship
+                self.db.insert_paper_recommendations(
+                    source_paper_id,
+                    rec_data['paperId'],
+                    idx
+                )
+
+                # Process recommended paper
+                self.process_paper(
+                    rec_data,
+                    None,  # No topic for recommendations
+                    False,  # Don't use for recommendations
+                    "recommended"
+                )
+
+        except Exception as e:
+            print(f"Error processing recommendations for {source_paper_id}: {e}")
+
+     def generate_paper_markdown(self, article: Article) -> str:
+        """Generate markdown content for a paper"""
+        template = """# {title}
+
+## Authors
+{authors}
+
+## Abstract
+{abstract}
+
+## Publication Details
+- Journal: {journal}
+- Date: {publication_date}
+- Citations: {citation_count}
+- H-index: {h_index}
+
+## URL
+{url}
+"""
+        authors_str = "\n".join([f"- {a.author_name} (h-index: {a.h_index or 'N/A'})" 
+                                for a in article.authors])
+        
+        return template.format(
+            title=article.info.title,
+            authors=authors_str,
+            abstract=article.info.abstract,
+            journal=article.info.journal,
+            publication_date=article.info.publication_date,
+            citation_count=article.info.citation_count,
+            h_index=article.info.h_index,
+            url=article.info.url
+        )
 
      def process_papers_from_csv(self, csv_path: str):
         """Process all papers from CSV with improved author handling"""
