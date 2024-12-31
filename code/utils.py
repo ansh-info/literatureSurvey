@@ -156,26 +156,46 @@ def add_paper_details(article_obj, article_data):
     article_obj.info.citation_count = article_data["citationCount"]
 
 
-def update_h_index(article_obj, dic):
-    """Update the h-index of the article based on the h-index of its authors"""
+def update_h_index(article_obj, authors_data):
+    """
+    Update h-index of article and its authors with improved calculation
+    """
     authors_h_index_list = []
-    for row in dic:
+    total_citations = 0
+
+    for row in authors_data:
         if row is None:
             continue
-        for author in article_obj.authors:
-            author_id = author.author_id
-            if author_id == row["authorId"]:
-                author.h_index = row["hIndex"]
-                author.name = row["name"]
-                author.citation_count = row["citationCount"]
-                if row["hIndex"] is not None:
-                    authors_h_index_list.append(row["hIndex"])
 
-    if len(authors_h_index_list) == 0:
-        authors_avg_h_index = 0
+        for author in article_obj.authors:
+            if author.author_id == row.get("authorId"):
+                # Update author information
+                author.h_index = row.get("hIndex")
+                author.name = row.get("name")
+                author.citation_count = row.get("citationCount")
+
+                if author.h_index is not None:
+                    authors_h_index_list.append(author.h_index)
+                if author.citation_count is not None:
+                    total_citations += author.citation_count
+
+    # Calculate article's h-index based on authors
+    if authors_h_index_list:
+        # Base h-index is the weighted average of authors
+        base_h_index = sum(authors_h_index_list) / len(authors_h_index_list)
+
+        # Adjust for paper's own impact
+        if article_obj.info.citation_count:
+            citation_factor = min(1.5, (article_obj.info.citation_count / 100) + 1)
+            final_h_index = base_h_index * citation_factor
+        else:
+            final_h_index = base_h_index
+
+        article_obj.info.h_index = round(final_h_index, 2)
     else:
-        authors_avg_h_index = max(authors_h_index_list)
-    article_obj.info.h_index = authors_avg_h_index
+        article_obj.info.h_index = 0
+
+    return article_obj.info.h_index
 
 
 def add_recommendations_to_positive_articles(article_id, limit=500, fields=FIELDS):

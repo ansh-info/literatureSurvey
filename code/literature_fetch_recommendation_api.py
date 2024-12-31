@@ -41,7 +41,9 @@ def extract_paper_id_from_url(url: str) -> str:
 
 
 def process_csv_file(csv_path: str, db: DatabaseManager):
-    """Process the CSV file and store data in the database"""
+    """Process CSV file with complete data pipeline"""
+    fetcher = DataFetcher(db)
+
     with open(csv_path, "r", encoding="utf-8-sig") as f:
         df = pd.read_csv(f)
         total_papers = len(df)
@@ -56,12 +58,15 @@ def process_csv_file(csv_path: str, db: DatabaseManager):
                 topic_id = db.insert_topic(topic)
                 print(f"✓ Topic saved: {topic}")
 
-                # Extract paper ID from URL
-                paper_id = row["URL"].strip().split("/")[-1].split("?")[0]
-                print(f"Paper ID: {paper_id}")
-
-                # Get use_for_recommendation
+                # Get paper usage and type
                 use_for_rec = str(row["Use"]).strip() == "1"
+                paper_type = row.get("Type", "positive").strip().lower()
+                if paper_type not in ["positive", "negative"]:
+                    paper_type = "positive"
+
+                # Extract paper ID
+                paper_id = row["URL"].strip().split("/")[-1].split("?")[0]
+                print(f"Processing paper ID: {paper_id}")
 
                 # Fetch paper details
                 paper_data = get_paper_details([paper_id])[0]
@@ -69,15 +74,17 @@ def process_csv_file(csv_path: str, db: DatabaseManager):
                     print(f"✗ Could not fetch details for paper {paper_id}")
                     continue
 
-                # Create and populate Article object
-                article = Article(paper_id, use_for_recommendation=use_for_rec)
-                add_paper_details(article, paper_data)
+                # Process paper with all related data
+                article = fetcher.process_paper(
+                    paper_data, topic_id, use_for_rec, paper_type
+                )
 
-                # Store in database
-                db.insert_paper(article)
-                db.link_topic_paper(topic_id, paper_id, "positive", use_for_rec)
-
-                print(f"✓ Successfully processed: {article.info.title}")
+                if article:
+                    print(f"✓ Successfully processed: {article.info.title}")
+                    print(f"  Authors: {len(article.authors)}")
+                    print(f"  H-index: {article.info.h_index}")
+                else:
+                    print(f"✗ Failed to process paper {paper_id}")
 
             except Exception as e:
                 print(f"Error processing row {index + 1}: {e}")
@@ -97,10 +104,11 @@ def main():
 
         print(f"\nStarting to process CSV file: {csv_path}")
         process_csv_file(csv_path, db)
-        print("Completed processing papers")
+        print("\nCompleted processing papers")
 
     except Exception as e:
         print(f"Error in main execution: {e}")
+        raise
 
 
 if __name__ == "__main__":
