@@ -5,6 +5,7 @@ This script demonstrates how to use the Semantic Scholar API to search for paper
 and retrieve their details.
 """
 
+
 import csv
 import os
 import time
@@ -19,25 +20,9 @@ from topic import Topic
 from utils import (add_negative_articles, add_paper_details,
                    add_recommendations,
                    add_recommendations_to_positive_articles,
-                   add_recommended_articles_to_zotero, get_author_details,
-                   get_paper_details, metrics_over_time_js, read_yaml,
-                   update_h_index, update_paper_details, write_yaml)
-
-
-def print_divider():
-    """Print a divider line for better readability"""
-    print("\n" + "=" * 80 + "\n")
-
-
-def extract_paper_id_from_url(url: str) -> str:
-    """Extract paper ID from Semantic Scholar URL"""
-    try:
-        last_part = url.split("/")[-1]
-        paper_id = last_part.split("?")[0]
-        return paper_id
-    except Exception as e:
-        print(f"Error extracting paper ID from URL {url}: {e}")
-        return None
+                   add_recommended_articles_to_zotero, get_paper_details,
+                   metrics_over_time_js, read_yaml, update_h_index,
+                   update_paper_details, write_yaml)
 
 
 def process_csv_file(csv_path: str, db: DatabaseManager):
@@ -97,8 +82,14 @@ def main():
         print("Initializing database connection...")
         db = DatabaseManager()
 
-        # Process CSV file
-        csv_path = "../data/query.csv"
+        # Construct the path to the CSV file
+        base_dir = os.path.dirname(
+            os.path.abspath(__file__)
+        )  # Directory of the current script
+        csv_path = os.path.join(
+            base_dir, "../data/query.csv"
+        )  # Adjust relative path accordingly
+
         if not os.path.exists(csv_path):
             raise FileNotFoundError(f"CSV file not found at {csv_path}")
 

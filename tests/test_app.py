@@ -1,6 +1,17 @@
+import os
+import sys
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+code_dir = os.path.join(project_root, "code")
+if code_dir not in sys.path:
+    sys.path.append(code_dir)
+
 from database import DatabaseManager
 
 
