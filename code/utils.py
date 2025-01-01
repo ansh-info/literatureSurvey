@@ -199,18 +199,95 @@ def update_h_index(article_obj, authors_data):
 
 
 def add_recommendations_to_positive_articles(article_id, limit=500, fields=FIELDS):
-    """Get paper recommendations with improved error handling"""
+    """Get paper recommendations with improved error handling and fallback"""
+    # First try the direct recommendation endpoint
+    try:
+        recommendations = _get_recommendations_direct(article_id, limit, fields)
+        if recommendations:
+            return recommendations
+    except Exception as e:
+        print(f"Direct recommendation failed: {e}")
+
+    # If direct recommendation fails, try batch recommendation
+    try:
+        return _get_recommendations_batch(article_id, limit, fields)
+    except Exception as e:
+        print(f"Batch recommendation failed: {e}")
+        return []
+
+
+def _get_recommendations_direct(article_id, limit=500, fields=FIELDS):
+    """Try getting recommendations using the direct endpoint"""
     endpoint = f"https://api.semanticscholar.org/recommendations/v1/papers/forpaper/{article_id}"
     params = {"fields": fields, "limit": limit, "from": "all-cs"}
 
     session = create_session()
-    print(f"Fetching recommendations for paper {article_id}")
+    print(f"Trying direct recommendations for paper {article_id}")
 
     response_data = handle_api_request(session, endpoint, params=params)
     if response_data is None:
-        print("Failed to fetch recommendations")
-        return []
+        return None
     return response_data.get("recommendedPapers", [])
+
+
+def _get_recommendations_batch(article_id, limit=500, fields=FIELDS):
+    """Try getting recommendations using the batch endpoint"""
+    endpoint = "https://api.semanticscholar.org/graph/v1/paper/batch"
+
+    # First get related papers
+    params = {
+        "fields": f"references,citations,{fields}",
+    }
+
+    session = create_session()
+    print(f"Trying batch recommendations for paper {article_id}")
+
+    # Get paper details including references and citations
+    json_data = {"ids": [article_id]}
+    paper_data = handle_api_request(
+        session, endpoint, params=params, json=json_data, method="POST"
+    )
+
+    if not paper_data or not paper_data[0]:
+        return []
+
+    paper = paper_data[0]
+
+    # Collect paper IDs from references and citations
+    related_ids = set()
+
+    if paper.get("references"):
+        related_ids.update(
+            ref["paperId"] for ref in paper["references"] if "paperId" in ref
+        )
+
+    if paper.get("citations"):
+        related_ids.update(
+            cit["paperId"] for cit in paper["citations"] if "paperId" in cit
+        )
+
+    # Convert to list and limit
+    related_ids = list(related_ids)[:limit]
+
+    if not related_ids:
+        return []
+
+    # Get full details for related papers
+    params = {"fields": fields}
+    json_data = {"ids": related_ids}
+
+    related_papers = handle_api_request(
+        session, endpoint, params=params, json=json_data, method="POST"
+    )
+
+    if not related_papers:
+        return []
+
+    # Filter out None values and sort by citation count
+    related_papers = [p for p in related_papers if p is not None]
+    related_papers.sort(key=lambda x: x.get("citationCount", 0) or 0, reverse=True)
+
+    return related_papers[:limit]
 
 
 def get_paper_details(paper_ids, fields=FIELDS):
