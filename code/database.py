@@ -153,56 +153,6 @@ class DatabaseManager:
 
         return self.execute_with_retry(operation)
 
-    def insert_paper_author(self, paper_id: str, author_id: str, author_order: int):
-        """Create paper-author relationship with order"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
-            query = """
-                INSERT INTO paper_authors (paper_id, author_id, author_order)
-                VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE author_order = VALUES(author_order)
-            """
-            cursor.execute(query, (paper_id, author_id, author_order))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
-
-    def insert_paper_recommendations(
-        self, source_paper_id: str, recommended_paper_id: str, recommendation_order: int
-    ) -> None:
-        """Store paper recommendations with retry logic"""
-
-        def operation(cursor):
-            query = """
-                INSERT INTO paper_recommendations 
-                    (source_paper_id, recommended_paper_id, recommendation_order)
-                VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE 
-                    recommendation_order = VALUES(recommendation_order)
-            """
-            cursor.execute(
-                query, (source_paper_id, recommended_paper_id, recommendation_order)
-            )
-
-        return self.execute_with_retry(operation)
-
-    def store_paper_markdown(self, paper_id: str, markdown_content: str) -> None:
-        """Store paper's markdown content with retry logic"""
-
-        def operation(cursor):
-            query = """
-                INSERT INTO paper_markdown (paper_id, markdown_content)
-                VALUES (%s, %s)
-                ON DUPLICATE KEY UPDATE 
-                    markdown_content = VALUES(markdown_content),
-                    last_updated = CURRENT_TIMESTAMP
-            """
-            cursor.execute(query, (paper_id, markdown_content))
-
-        return self.execute_with_retry(operation)
-
     def link_paper_author(
         self, paper_id: str, author_id: str, author_order: int = 1
     ) -> None:
@@ -238,6 +188,25 @@ class DatabaseManager:
             """
             cursor.execute(
                 query, (topic_id, paper_id, paper_type, use_for_recommendation)
+            )
+
+        return self.execute_with_retry(operation)
+
+    def insert_paper_recommendations(
+        self, source_paper_id: str, recommended_paper_id: str, recommendation_order: int
+    ) -> None:
+        """Store paper recommendations with retry logic"""
+
+        def operation(cursor):
+            query = """
+                INSERT INTO paper_recommendations 
+                    (source_paper_id, recommended_paper_id, recommendation_order)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE 
+                    recommendation_order = VALUES(recommendation_order)
+            """
+            cursor.execute(
+                query, (source_paper_id, recommended_paper_id, recommendation_order)
             )
 
         return self.execute_with_retry(operation)
