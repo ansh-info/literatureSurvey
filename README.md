@@ -104,8 +104,7 @@ Literature Survey System
 4. **Run the Application**
 
    ```bash
-   cd code
-   python literature_fetch_recommendation_api.py
+   python code/literature_fetch_recommendation_api.py
 
    # Run the Application
    streamlit run app/app.py
