@@ -48,8 +48,6 @@ Literature Survey System
 
 ![ER Diagram](images/db_er_diagram.png)
 
-![Papers ER  Diagram](images/papers_er_diagram.png)
-
 ### Core Components
 
 - `Article` & `Author` classes: Advanced data modeling
